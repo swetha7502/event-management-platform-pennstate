@@ -8,6 +8,7 @@ node_modules/
 dist/
 dist-ssr/
 build/
+*.tsbuildinfo
 
 # Env files — real secrets live here (Supabase service role key, OpenAI
 # key, etc.). Never commit these. backend/.gitignore and frontend/.gitignore
