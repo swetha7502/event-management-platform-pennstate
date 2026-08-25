@@ -1,0 +1,26 @@
+# Local tooling — not part of the shipped project
+.claude/
+
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+dist-ssr/
+build/
+
+# Env files — real secrets live here (Supabase service role key, OpenAI
+# key, etc.). Never commit these. backend/.gitignore and frontend/.gitignore
+# also cover this locally; this is the repo-root safety net.
+.env
+.env.local
+.env.*.local
+*.local
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS/editor junk
+.DS_Store
+Thumbs.db
