@@ -1,0 +1,24 @@
+name: Keep backend warm
+
+# Render's free tier spins the backend down after 15 min of inactivity
+# and takes ~30-50s to wake back up on the next real request. Pinging
+# every 10 min keeps it from ever sleeping during the testing window.
+#
+# IMPORTANT: update the URL below to match your actual Render service
+# URL once deployed (predicted from render.yaml's service name — Render
+# assigns a different subdomain if that name was already taken).
+#
+# Note: GitHub auto-disables scheduled workflows after 60 days with no
+# repo commits — re-enable it from the Actions tab if that happens.
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping backend health endpoint
+        run: curl -sf https://geo-event-backend.onrender.com/health || true
