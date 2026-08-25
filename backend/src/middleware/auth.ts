@@ -11,30 +11,37 @@ declare global {
 }
 
 /**
- * PLACEHOLDER AUTH — v1 dev only.
- * Expects header: Authorization: Bearer <user_id>
- * Looks the user up in the `users` table and attaches it to req.user.
+ * Real auth: expects header `Authorization: Bearer <supabase-access-token>`
+ * — the real Supabase Auth session token (see frontend AuthContext.tsx /
+ * aiClient.ts), not a raw user id. supabase.auth.getUser(token) verifies
+ * the token cryptographically against Supabase before anything is trusted.
  *
- * Swap point for real SSO later: replace the body of this function with
- * real token verification (e.g. PSU SSO / JWT), keep the req.user contract
- * the same so nothing downstream has to change.
+ * Previously this trusted a raw `Bearer <user_id>` with no verification
+ * at all — anyone who knew or could read a user_id (e.g. via the public
+ * anon key) could impersonate that user. Fixed as part of the pre-launch
+ * security pass, Aug 2026.
  */
 export async function requireAuth(req: Request, res: Response, next: NextFunction) {
   const authHeader = req.headers.authorization;
-  const userId = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
+  const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
 
-  if (!userId) {
+  if (!token) {
     return res.status(401).json({ error: 'Missing Authorization header' });
+  }
+
+  const { data: authData, error: authError } = await supabase.auth.getUser(token);
+  if (authError || !authData.user?.email) {
+    return res.status(401).json({ error: 'Invalid or expired session' });
   }
 
   const { data, error } = await supabase
     .from('users')
     .select('user_id, role, email')
-    .eq('user_id', userId)
+    .eq('email', authData.user.email)
     .single();
 
   if (error || !data) {
-    return res.status(401).json({ error: 'Invalid user' });
+    return res.status(401).json({ error: 'No matching user profile for this account' });
   }
 
   req.user = data as Express.Request['user'];

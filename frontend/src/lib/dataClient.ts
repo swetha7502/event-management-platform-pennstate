@@ -5,6 +5,7 @@
 // query bodies below — no page component needs to change.
 
 import type { Event, InventoryItem, PredictionConfidence, Student, Task, TaskStatus, UserRole } from "../types";
+import type { EventPhase } from "../data/taskTemplates";
 import {
   INITIAL_TASKS,
   INVENTORY,
@@ -108,6 +109,32 @@ export async function updateInventoryCount(itemId: string, count: number): Promi
       .from("inventory_items")
       .update({ quantity_available: count })
       .eq("item_id", itemId);
+    if (error) throw error;
+    return;
+  }
+  return Promise.resolve();
+}
+
+export async function createInventoryItem(input: {
+  name: string;
+  category: string;
+  count: number;
+}): Promise<InventoryItem> {
+  if (USE_SUPABASE && supabase) {
+    const { data, error } = await supabase
+      .from("inventory_items")
+      .insert({ name: input.name, category: input.category, quantity_available: input.count })
+      .select("item_id, name, category, count:quantity_available")
+      .single();
+    if (error) throw error;
+    return data as InventoryItem;
+  }
+  return Promise.resolve({ item_id: "i" + Date.now(), name: input.name, category: input.category, count: input.count });
+}
+
+export async function deleteInventoryItem(itemId: string): Promise<void> {
+  if (USE_SUPABASE && supabase) {
+    const { error } = await supabase.from("inventory_items").delete().eq("item_id", itemId);
     if (error) throw error;
     return;
   }
@@ -354,4 +381,169 @@ export async function getUserProfile(email: string): Promise<UserProfile | null>
     return null;
   }
   return data;
+}
+
+// --- Plan draft (AI chat -> Review page) ---
+// Persisted to Supabase (draft_plans/draft_tasks) rather than kept in
+// memory, specifically so two different Coordinators — on two different
+// logins, two different devices — see and can act on the same draft.
+// A row-per-task model, not one JSON blob, so each task can be
+// individually approved/discarded without touching the others.
+
+export interface DraftTaskRow {
+  id: string; // draft_task_id
+  title: string;
+  description: string;
+  phase: EventPhase;
+  due_date: string;
+  assigned_to: string | null;
+  assigneeName: string;
+}
+
+export interface DraftPlan {
+  draftId: string;
+  eventTitle: string;
+  eventDate: string;
+  culturalTag: string | null;
+  predictedAttendance: number | null;
+  attendanceRange: { low: number; high: number } | null;
+  predictionConfidence: PredictionConfidence;
+  recommendedFoodCount: number | null;
+  basisNote: string;
+  eventId: string | null;
+  tasks: DraftTaskRow[];
+}
+
+export async function getActiveDraft(): Promise<DraftPlan | null> {
+  if (!(USE_SUPABASE && supabase)) return null;
+
+  const { data: plan, error: planErr } = await supabase
+    .from("draft_plans")
+    .select("*")
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (planErr) throw planErr;
+  if (!plan) return null;
+
+  const { data: tasks, error: tasksErr } = await supabase
+    .from("draft_tasks")
+    .select("*")
+    .eq("draft_id", plan.draft_id)
+    .order("due_date", { ascending: true });
+  if (tasksErr) throw tasksErr;
+
+  return {
+    draftId: plan.draft_id,
+    eventTitle: plan.event_title,
+    eventDate: plan.event_date,
+    culturalTag: plan.cultural_tag,
+    predictedAttendance: plan.predicted_attendance,
+    attendanceRange:
+      plan.attendance_range_low !== null && plan.attendance_range_high !== null
+        ? { low: plan.attendance_range_low, high: plan.attendance_range_high }
+        : null,
+    predictionConfidence: plan.prediction_confidence,
+    recommendedFoodCount: plan.recommended_food_count,
+    basisNote: plan.basis_note,
+    eventId: plan.event_id,
+    tasks: (tasks ?? []).map((t) => ({
+      id: t.draft_task_id,
+      title: t.title,
+      description: t.description ?? "",
+      phase: t.phase,
+      due_date: t.due_date,
+      assigned_to: t.assigned_to,
+      assigneeName: t.assignee_name ?? "Unassigned",
+    })),
+  };
+}
+
+export async function createDraftPlan(input: {
+  eventTitle: string;
+  eventDate: string;
+  culturalTag: string | null;
+  predictedAttendance: number | null;
+  attendanceRange: { low: number; high: number } | null;
+  predictionConfidence: PredictionConfidence;
+  recommendedFoodCount: number | null;
+  basisNote: string;
+  createdBy: string;
+  tasks: {
+    title: string;
+    description: string;
+    phase: EventPhase;
+    due_date: string;
+    assigned_to: string | null;
+    assigneeName: string;
+  }[];
+}): Promise<void> {
+  if (!(USE_SUPABASE && supabase)) return;
+
+  const { data: plan, error: planErr } = await supabase
+    .from("draft_plans")
+    .insert({
+      event_title: input.eventTitle,
+      event_date: input.eventDate,
+      cultural_tag: input.culturalTag,
+      predicted_attendance: input.predictedAttendance,
+      attendance_range_low: input.attendanceRange?.low ?? null,
+      attendance_range_high: input.attendanceRange?.high ?? null,
+      prediction_confidence: input.predictionConfidence,
+      recommended_food_count: input.recommendedFoodCount,
+      basis_note: input.basisNote,
+      created_by: input.createdBy,
+    })
+    .select("draft_id")
+    .single();
+  if (planErr) throw planErr;
+
+  const rows = input.tasks.map((t) => ({
+    draft_id: plan.draft_id,
+    title: t.title,
+    description: t.description,
+    phase: t.phase,
+    due_date: t.due_date,
+    assigned_to: t.assigned_to,
+    assignee_name: t.assigneeName,
+  }));
+  const { error: tasksErr } = await supabase.from("draft_tasks").insert(rows);
+  if (tasksErr) throw tasksErr;
+}
+
+export async function updateDraftTaskRow(
+  draftTaskId: string,
+  patch: { title?: string; description?: string; assigned_to?: string | null; assigneeName?: string; due_date?: string }
+): Promise<void> {
+  if (!(USE_SUPABASE && supabase)) return;
+  const row: Record<string, unknown> = {};
+  if (patch.title !== undefined) row.title = patch.title;
+  if (patch.description !== undefined) row.description = patch.description;
+  if (patch.assigned_to !== undefined) row.assigned_to = patch.assigned_to;
+  if (patch.assigneeName !== undefined) row.assignee_name = patch.assigneeName;
+  if (patch.due_date !== undefined) row.due_date = patch.due_date;
+  const { error } = await supabase.from("draft_tasks").update(row).eq("draft_task_id", draftTaskId);
+  if (error) throw error;
+}
+
+// Called after a draft task is resolved — approved (the real task was
+// already created separately) or discarded — either way it's removed
+// from the shared draft so it "vanishes" for every viewer, not just
+// the one who acted on it.
+export async function resolveDraftTask(draftTaskId: string): Promise<void> {
+  if (!(USE_SUPABASE && supabase)) return;
+  const { error } = await supabase.from("draft_tasks").delete().eq("draft_task_id", draftTaskId);
+  if (error) throw error;
+}
+
+export async function setDraftPlanEventId(draftId: string, eventId: string): Promise<void> {
+  if (!(USE_SUPABASE && supabase)) return;
+  const { error } = await supabase.from("draft_plans").update({ event_id: eventId }).eq("draft_id", draftId);
+  if (error) throw error;
+}
+
+export async function deleteDraftPlan(draftId: string): Promise<void> {
+  if (!(USE_SUPABASE && supabase)) return;
+  const { error } = await supabase.from("draft_plans").delete().eq("draft_id", draftId);
+  if (error) throw error;
 }

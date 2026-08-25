@@ -11,8 +11,15 @@ import {
 } from "lucide-react";
 import { useDraft } from "../context/DraftContext";
 import { useAuth } from "../context/AuthContext";
-import { createEvent, createTask, getStudents } from "../lib/dataClient";
-import type { DraftTaskItem } from "../context/DraftContext";
+import {
+  createEvent,
+  createTask,
+  getStudents,
+  updateDraftTaskRow,
+  resolveDraftTask,
+  setDraftPlanEventId,
+  type DraftTaskRow,
+} from "../lib/dataClient";
 import type { EventPhase } from "../data/taskTemplates";
 import type { OutletContextType, Student } from "../types";
 
@@ -24,12 +31,12 @@ const PHASE_LABEL: Record<EventPhase, string> = {
 const PHASE_ORDER: EventPhase[] = ["before", "during", "after"];
 
 export default function ReviewPage() {
-  const { pendingDraft, setPendingDraft, updateDraftTask, setDraftEventId } = useDraft();
+  const { pendingDraft, refreshDraft, discardDraft } = useDraft();
   const { session } = useAuth();
   const { showToast } = useOutletContext<OutletContextType>();
   const [students, setStudents] = useState<Student[]>([]);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [draft, setDraft] = useState<Partial<DraftTaskItem>>({});
+  const [draft, setDraft] = useState<Partial<DraftTaskRow>>({});
   const [busyId, setBusyId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -45,7 +52,8 @@ export default function ReviewPage() {
       <div>
         <h2 className="text-xl font-semibold text-slate-800 mb-1">Plan review</h2>
         <p className="text-sm text-slate-500 mb-6">
-          Drafts from the AI assistant show up here for approval.
+          Drafts from the AI assistant show up here for approval — shared with every Coordinator,
+          not just whoever created it.
         </p>
         <div className="bg-white border border-slate-200 rounded-xl p-10 text-center text-slate-400 text-sm">
           No pending drafts. Ask the AI assistant about your next event to generate one.
@@ -54,19 +62,24 @@ export default function ReviewPage() {
     );
   }
 
-  const startEdit = (t: DraftTaskItem) => {
+  const startEdit = (t: DraftTaskRow) => {
     setEditingId(t.id);
     setDraft({ ...t });
   };
 
-  const saveEdit = () => {
+  const saveEdit = async () => {
     if (!editingId) return;
-    updateDraftTask(editingId, draft);
+    try {
+      await updateDraftTaskRow(editingId, draft);
+      await refreshDraft();
+    } catch {
+      showToast("Failed to save changes");
+    }
     setEditingId(null);
   };
 
   // Creates the event on the very first task approval in this draft;
-  // every later approval in the same draft reuses that event_id.
+  // every later approval (by either Coordinator) reuses that event_id.
   const ensureEvent = async (): Promise<string | null> => {
     if (pendingDraft.eventId) return pendingDraft.eventId;
     if (!session.userId) return null;
@@ -78,17 +91,13 @@ export default function ReviewPage() {
       prediction_confidence: pendingDraft.predictionConfidence,
       created_by: session.userId,
     });
-    setDraftEventId(event.event_id);
+    await setDraftPlanEventId(pendingDraft.draftId, event.event_id);
     return event.event_id;
   };
 
-  // Once a task is resolved (approved or discarded) it vanishes from
-  // this list. Once none are left pending, the whole draft clears —
-  // it's served its purpose.
-  const otherPendingCount = (excludingId: string) =>
-    pendingDraft.tasks.filter((x) => x.status === "pending" && x.id !== excludingId).length;
+  const isLastTask = pendingDraft.tasks.length === 1;
 
-  const approveTask = async (t: DraftTaskItem) => {
+  const approveTask = async (t: DraftTaskRow) => {
     if (!session.userId) {
       showToast("Couldn't resolve your account — try logging in again");
       return;
@@ -105,11 +114,12 @@ export default function ReviewPage() {
         due_date: t.due_date,
         created_by: session.userId,
       });
-      if (otherPendingCount(t.id) === 0) {
-        setPendingDraft(null);
+      await resolveDraftTask(t.id);
+      if (isLastTask) {
+        await discardDraft();
         showToast(`"${t.title}" assigned — plan fully reviewed`);
       } else {
-        updateDraftTask(t.id, { status: "approved" });
+        await refreshDraft();
         showToast(`"${t.title}" assigned`);
       }
     } catch {
@@ -118,21 +128,28 @@ export default function ReviewPage() {
     setBusyId(null);
   };
 
-  const discardTask = (t: DraftTaskItem) => {
-    if (otherPendingCount(t.id) === 0) {
-      setPendingDraft(null);
-      showToast("Plan fully reviewed");
-    } else {
-      updateDraftTask(t.id, { status: "discarded" });
+  const discardTask = async (t: DraftTaskRow) => {
+    try {
+      await resolveDraftTask(t.id);
+      if (isLastTask) {
+        await discardDraft();
+        showToast("Plan fully reviewed");
+      } else {
+        await refreshDraft();
+      }
+    } catch {
+      showToast("Failed to discard — try again");
     }
   };
 
-  const discardDraft = () => {
-    setPendingDraft(null);
-    showToast("Draft discarded");
+  const handleDiscardDraft = async () => {
+    try {
+      await discardDraft();
+      showToast("Draft discarded");
+    } catch {
+      showToast("Failed to discard draft");
+    }
   };
-
-  const pendingTasks = pendingDraft.tasks.filter((t) => t.status === "pending");
 
   return (
     <div>
@@ -140,14 +157,15 @@ export default function ReviewPage() {
         <h2 className="text-xl font-semibold text-slate-800">Plan review</h2>
       </div>
       <p className="text-sm text-slate-500 mb-6">
-        Drafted by the AI assistant — review, edit, and approve each task individually.
+        Drafted by the AI assistant — shared across both Coordinators. Review, edit, and approve
+        each task individually.
       </p>
 
       <div className="bg-white border border-slate-200 rounded-xl p-5 mb-5">
         <div className="flex items-center justify-between mb-3">
           <h3 className="text-base font-semibold text-slate-800">{pendingDraft.eventTitle}</h3>
           <span className="text-xs px-2.5 py-1 rounded-full font-medium bg-amber-50 text-amber-700">
-            {pendingTasks.length} pending review
+            {pendingDraft.tasks.length} pending review
           </span>
         </div>
         <p className="text-xs text-slate-500 mb-4">
@@ -189,7 +207,7 @@ export default function ReviewPage() {
       </div>
 
       {PHASE_ORDER.map((phase) => {
-        const phaseTasks = pendingTasks.filter((t) => t.phase === phase);
+        const phaseTasks = pendingDraft.tasks.filter((t) => t.phase === phase);
         if (phaseTasks.length === 0) return null;
         return (
           <div key={phase} className="bg-white border border-slate-200 rounded-xl overflow-hidden mb-5">
@@ -298,7 +316,7 @@ export default function ReviewPage() {
 
       <div className="flex items-center justify-end">
         <button
-          onClick={discardDraft}
+          onClick={handleDiscardDraft}
           className="flex items-center gap-1.5 text-xs text-slate-500 hover:text-red-600"
         >
           <Trash2 size={13} /> Discard entire draft

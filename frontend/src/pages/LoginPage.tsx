@@ -24,7 +24,7 @@ export default function LoginPage() {
     const { error: loginError } = await login(email.trim(), password);
     setBusy(false);
     if (loginError) {
-      setError("Incorrect email or password.");
+      setError(loginError);
       return;
     }
     navigate("/dashboard");

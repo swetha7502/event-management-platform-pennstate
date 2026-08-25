@@ -4,6 +4,8 @@
 // put an OpenAI key in frontend env vars — VITE_* vars ship in the
 // public JS bundle.
 
+import { supabase } from "./supabaseClient";
+
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:4000";
 
 export interface ChatTurn {
@@ -30,16 +32,17 @@ export interface AiChatResponse {
   category: string | null;
 }
 
-export async function sendChatMessage(
-  message: string,
-  history: ChatTurn[],
-  userId: string | undefined
-): Promise<AiChatResponse> {
+export async function sendChatMessage(message: string, history: ChatTurn[]): Promise<AiChatResponse> {
+  // Real Supabase Auth access token — the backend verifies this
+  // cryptographically (supabase.auth.getUser(token)), not a raw user id.
+  const sessionResult = supabase ? await supabase.auth.getSession() : null;
+  const token = sessionResult?.data.session?.access_token;
+
   const res = await fetch(`${API_BASE_URL}/ai/chat`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      ...(userId ? { Authorization: `Bearer ${userId}` } : {}),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
     body: JSON.stringify({ message, history }),
   });

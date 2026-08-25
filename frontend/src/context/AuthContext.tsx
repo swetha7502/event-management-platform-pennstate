@@ -49,10 +49,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const login = async (email: string, password: string): Promise<{ error?: string }> => {
     if (!(USE_SUPABASE && supabase)) {
       await resolveSession(email);
-      return {};
+      return session ? {} : { error: "No matching profile in mock roster." };
     }
     const { error } = await supabase.auth.signInWithPassword({ email, password });
-    if (error) return { error: error.message };
+    if (error) return { error: "Incorrect email or password." };
+
+    // Resolve the profile *here*, synchronously with login, instead of
+    // relying on the onAuthStateChange listener to eventually catch up —
+    // otherwise a valid login with no matching public.users row silently
+    // bounces back to /login with no explanation (a real account, just
+    // missing from the roster, e.g. a typo when it was added).
+    const profile = await getUserProfile(email);
+    if (!profile) {
+      await supabase.auth.signOut();
+      return { error: "Your account isn't on the event platform roster yet. Contact a Coordinator." };
+    }
+    setSession({ role: profile.role, name: profile.name, userId: profile.user_id });
     return {};
   };
 

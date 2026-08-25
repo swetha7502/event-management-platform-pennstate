@@ -1,68 +1,47 @@
-import { createContext, useContext, useState, ReactNode } from "react";
-import type { PredictionConfidence } from "../types";
-import type { EventPhase } from "../data/taskTemplates";
-
-export type DraftTaskStatus = "pending" | "approved" | "discarded";
-
-export interface DraftTaskItem {
-  id: string; // stable local id for this draft session, e.g. "dt-0"
-  title: string;
-  description: string;
-  phase: EventPhase;
-  due_date: string; // ISO date (yyyy-mm-dd)
-  assigned_to: string | null; // user_id, pre-assigned round-robin across students
-  assigneeName: string;
-  status: DraftTaskStatus;
-}
-
-export interface PendingDraft {
-  eventTitle: string;
-  eventDate: string; // ISO date (yyyy-mm-dd)
-  culturalTag: string | null;
-  predictedAttendance: number | null;
-  attendanceRange: { low: number; high: number } | null;
-  predictionConfidence: PredictionConfidence;
-  recommendedFoodCount: number | null;
-  basisNote: string;
-  tasks: DraftTaskItem[];
-  // Set once the event is actually created in Supabase — lazily, on the
-  // first task approval — so later per-task approvals in the same draft
-  // reuse it instead of creating duplicate events.
-  eventId: string | null;
-}
+import { createContext, useContext, useEffect, useState, ReactNode } from "react";
+import { getActiveDraft, deleteDraftPlan, type DraftPlan } from "../lib/dataClient";
 
 interface DraftContextValue {
-  pendingDraft: PendingDraft | null;
-  setPendingDraft: (d: PendingDraft | null) => void;
-  updateDraftTask: (taskId: string, patch: Partial<DraftTaskItem>) => void;
-  setDraftEventId: (eventId: string) => void;
+  pendingDraft: DraftPlan | null;
+  loading: boolean;
+  refreshDraft: () => Promise<void>;
+  discardDraft: () => Promise<void>;
 }
 
 const DraftContext = createContext<DraftContextValue | undefined>(undefined);
 
-// Holds the AI chat's most recent draft (event + task list) entirely
-// in memory — nothing touches Supabase until a Coordinator approves
-// each task individually on the Review page. Lost on refresh; that's a
-// deliberate v1 tradeoff to avoid a "pending approval" DB migration for
-// a single in-flight draft. Revisit if multiple concurrent drafts are
-// ever needed.
+// Backed by Supabase (draft_plans/draft_tasks), not local React state —
+// specifically so two Coordinators, on two different logins/devices,
+// see and can act on the same in-flight AI-drafted plan. This is a thin
+// cache: refreshDraft() re-fetches from the DB, which callers do after
+// every mutation (create/approve/discard/edit) rather than trusting
+// optimistic local state, since someone else may have changed it too.
 export function DraftProvider({ children }: { children: ReactNode }) {
-  const [pendingDraft, setPendingDraft] = useState<PendingDraft | null>(null);
+  const [pendingDraft, setPendingDraft] = useState<DraftPlan | null>(null);
+  const [loading, setLoading] = useState(true);
 
-  const updateDraftTask = (taskId: string, patch: Partial<DraftTaskItem>) => {
-    setPendingDraft((d) =>
-      d
-        ? { ...d, tasks: d.tasks.map((t) => (t.id === taskId ? { ...t, ...patch } : t)) }
-        : d
-    );
+  const refreshDraft = async () => {
+    try {
+      const draft = await getActiveDraft();
+      setPendingDraft(draft);
+    } catch {
+      // leave whatever was last known — a transient fetch failure
+      // shouldn't wipe the nav badge / review page state
+    }
   };
 
-  const setDraftEventId = (eventId: string) => {
-    setPendingDraft((d) => (d ? { ...d, eventId } : d));
+  useEffect(() => {
+    refreshDraft().finally(() => setLoading(false));
+  }, []);
+
+  const discardDraft = async () => {
+    if (!pendingDraft) return;
+    await deleteDraftPlan(pendingDraft.draftId);
+    await refreshDraft();
   };
 
   return (
-    <DraftContext.Provider value={{ pendingDraft, setPendingDraft, updateDraftTask, setDraftEventId }}>
+    <DraftContext.Provider value={{ pendingDraft, loading, refreshDraft, discardDraft }}>
       {children}
     </DraftContext.Provider>
   );
