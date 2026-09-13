@@ -71,7 +71,7 @@ export const EVENT_TASK_TEMPLATE: TaskTemplateItem[] = [
   },
   {
     title: "Prepare gifts/giveaways",
-    description: "If applicable, source and prepare any gifts or giveaways.",
+    description: "If applicable, source and prepare any gifts or giveaways — reuse existing party supplies/inventory where possible before buying anything new.",
     phase: "before",
     dayOffset: -21,
   },

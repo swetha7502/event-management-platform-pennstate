@@ -3,10 +3,36 @@ import { Link } from "react-router-dom";
 import { Send, Sparkles, ClipboardList, Plus, MessageSquare, Trash2, ClipboardCheck } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
 import { useDraft } from "../context/DraftContext";
-import { getStudents, createDraftPlan } from "../lib/dataClient";
+import { getStudents, getInventory, createDraftPlan } from "../lib/dataClient";
 import { sendChatMessage } from "../lib/aiClient";
 import { EVENT_TASK_TEMPLATE } from "../data/taskTemplates";
 import type { AiPrediction, ChatTurn } from "../lib/aiClient";
+import type { InventoryItem } from "../types";
+
+const INVENTORY_CHECK_TITLE = "Check inventory before ordering supplies";
+const LOW_STOCK_THRESHOLD = 5;
+
+// Grounded in the real Inventory table at draft time — same principle
+// as attendance predictions: the AI orchestrates *when* this task gets
+// added, never invents *what's* in it. Sustainability is the actual
+// point of the app, so every drafted plan nudges toward reusing what
+// GEO already has before anyone orders anything new.
+function buildInventorySummary(inventory: InventoryItem[]): string {
+  if (inventory.length === 0) {
+    return "No inventory on record yet — check with the team before ordering anything new.";
+  }
+  const categories = Array.from(new Set(inventory.map((i) => i.category)));
+  const lowStock = [...inventory].filter((i) => i.count <= LOW_STOCK_THRESHOLD).sort((a, b) => a.count - b.count);
+  const lowStockText = lowStock.length
+    ? ` Running low on: ${lowStock
+        .slice(0, 8)
+        .map((i) => `${i.name} (${i.count})`)
+        .join(", ")}${lowStock.length > 8 ? ", …" : ""}.`
+    : " Nothing critically low right now.";
+  return `GEO already has ${inventory.length} items in storage across ${categories.length} categories (${categories.join(
+    ", "
+  )}) — check the Inventory page and reuse what's available before purchasing anything new.${lowStockText}`;
+}
 
 interface ChatMessage {
   from: "ai" | "user";
@@ -145,9 +171,20 @@ export default function AIChatPage() {
     const eventDate = new Date(eventDateISO + "T00:00:00");
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-    const students = await getStudents();
+    const [students, inventory] = await Promise.all([getStudents(), getInventory()]);
 
-    const tasks = EVENT_TASK_TEMPLATE.map((t, i) => {
+    // Always considers inventory first — spliced in right after the
+    // earliest logistics tasks, before anything that involves sourcing
+    // supplies (gifts, decorations, etc.).
+    const template = [...EVENT_TASK_TEMPLATE];
+    template.splice(2, 0, {
+      title: INVENTORY_CHECK_TITLE,
+      description: buildInventorySummary(inventory),
+      phase: "before",
+      dayOffset: -42,
+    });
+
+    const tasks = template.map((t, i) => {
       const due = new Date(eventDate);
       due.setDate(due.getDate() + t.dayOffset);
       if (t.dayOffset < 0 && due < today) due.setTime(today.getTime());

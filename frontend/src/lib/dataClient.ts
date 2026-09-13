@@ -115,6 +115,22 @@ export async function updateInventoryCount(itemId: string, count: number): Promi
   return Promise.resolve();
 }
 
+export async function updateInventoryItem(
+  itemId: string,
+  patch: { name?: string; category?: string; count?: number }
+): Promise<void> {
+  if (USE_SUPABASE && supabase) {
+    const row: Record<string, unknown> = {};
+    if (patch.name !== undefined) row.name = patch.name;
+    if (patch.category !== undefined) row.category = patch.category;
+    if (patch.count !== undefined) row.quantity_available = patch.count;
+    const { error } = await supabase.from("inventory_items").update(row).eq("item_id", itemId);
+    if (error) throw error;
+    return;
+  }
+  return Promise.resolve();
+}
+
 export async function createInventoryItem(input: {
   name: string;
   category: string;
