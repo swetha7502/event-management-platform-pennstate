@@ -17,6 +17,6 @@ services:
       - key: OPENAI_API_KEY
         sync: false
       - key: OPENAI_MODEL
-        value: gpt-5-nano
+        value: gpt-4o-mini
       - key: JWT_SECRET
         sync: false
