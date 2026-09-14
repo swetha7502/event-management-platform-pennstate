@@ -55,6 +55,51 @@ function classifyConfidence(matchCount: number, coefficientOfVariation: number):
   return 'low';
 }
 
+function levenshtein(a: string, b: string): number {
+  const m = a.length;
+  const n = b.length;
+  if (m === 0) return n;
+  if (n === 0) return m;
+  const dp: number[][] = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+  for (let i = 0; i <= m; i++) dp[i][0] = i;
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      dp[i][j] = Math.min(dp[i - 1][j] + 1, dp[i][j - 1] + 1, dp[i - 1][j - 1] + cost);
+    }
+  }
+  return dp[m][n];
+}
+
+// Typo tolerance: "Wordlfest" should still find "Worldfest" rather than
+// silently falling back to a generic category average. Only used when
+// the exact/keyword match finds nothing — never overrides a real match,
+// and the threshold (verified against realistic typos, e.g.
+// "Navrati"->"Navratri" distance 1, "Mid autum festival" distance 2)
+// is tight enough that genuinely different events (e.g. "Holi" vs
+// "Worldfest", distance 7) never get conflated.
+async function findFuzzyTitleMatch(query: string): Promise<string | null> {
+  const { data, error } = await supabase
+    .from('events')
+    .select('title')
+    .eq('status', 'completed')
+    .not('actual_attendance', 'is', null);
+  if (error || !data) return null;
+
+  const distinctTitles = Array.from(new Set(data.map((e) => e.title)));
+  const normalizedQuery = query.toLowerCase();
+  let best: { title: string; distance: number } | null = null;
+  for (const title of distinctTitles) {
+    const distance = levenshtein(normalizedQuery, title.toLowerCase());
+    const threshold = Math.max(2, Math.floor(title.length * 0.3));
+    if (distance <= threshold && (!best || distance < best.distance)) {
+      best = { title, distance };
+    }
+  }
+  return best?.title ?? null;
+}
+
 export async function predictEvent(eventName: string, category?: string | null): Promise<EventPrediction> {
   const keywords = eventName
     .trim()
@@ -73,6 +118,23 @@ export async function predictEvent(eventName: string, category?: string | null):
       .order('date', { ascending: true }); // oldest-first for recency weighting
     if (error) throw error;
     matched = data ?? [];
+  }
+
+  let correctedTitle: string | null = null;
+  if (matched.length === 0) {
+    correctedTitle = await findFuzzyTitleMatch(eventName.trim());
+    if (correctedTitle) {
+      const { data, error } = await supabase
+        .from('events')
+        .select('event_id, date, actual_attendance')
+        .eq('status', 'completed')
+        .not('actual_attendance', 'is', null)
+        .eq('title', correctedTitle)
+        .order('date', { ascending: true });
+      if (error) throw error;
+      matched = data ?? [];
+      if (matched.length === 0) correctedTitle = null;
+    }
   }
 
   let usedCategoryFallback = false;
@@ -116,7 +178,9 @@ export async function predictEvent(eventName: string, category?: string | null):
     confidence = classifyConfidence(matched.length, cv);
     basisNote = usedCategoryFallback
       ? `No history for "${eventName.trim()}" specifically — estimate based on ${matched.length} past "${category}" events, weighted toward the most recent.`
-      : `Based on ${matched.length} past event${matched.length === 1 ? '' : 's'} matching "${eventName.trim()}"${matched.length >= 2 ? ', weighted toward the most recent' : ''}.`;
+      : correctedTitle
+        ? `Interpreted "${eventName.trim()}" as "${correctedTitle}" — based on ${matched.length} past event${matched.length === 1 ? '' : 's'}, weighted toward the most recent.`
+        : `Based on ${matched.length} past event${matched.length === 1 ? '' : 's'} matching "${eventName.trim()}"${matched.length >= 2 ? ', weighted toward the most recent' : ''}.`;
   }
 
   const attendances = matched
