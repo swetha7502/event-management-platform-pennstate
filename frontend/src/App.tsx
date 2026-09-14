@@ -3,7 +3,6 @@ import { AuthProvider } from "./context/AuthContext";
 import { DraftProvider } from "./context/DraftContext";
 import ProtectedRoute from "./components/ProtectedRoute";
 import LoginPage from "./pages/LoginPage";
-import ResetPasswordPage from "./pages/ResetPasswordPage";
 import DashboardPage from "./pages/DashboardPage";
 import AIChatPage from "./pages/AIChatPage";
 import TasksPage from "./pages/TasksPage";
@@ -19,7 +18,6 @@ export default function App() {
         <BrowserRouter>
           <Routes>
             <Route path="/login" element={<LoginPage />} />
-            <Route path="/reset-password" element={<ResetPasswordPage />} />
 
             <Route element={<ProtectedRoute />}>
               <Route path="/dashboard" element={<DashboardPage />} />
