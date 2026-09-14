@@ -184,10 +184,25 @@ export default function AIChatPage() {
       dayOffset: -42,
     });
 
+    // The template's "before" offsets assume a full ~45-day planning
+    // runway. When an event is drafted with less lead time than that
+    // (the real, common case — coordinators often only start planning a
+    // few weeks out), a hard clamp to "today" used to pile nearly every
+    // before-task onto the same due date. Instead, scale the whole
+    // before-phase down proportionally to the days actually available,
+    // so tasks stay spread out and in the same relative order however
+    // much runway there is — no change at all when there's 45+ days.
+    const availableDays = Math.round((eventDate.getTime() - today.getTime()) / 86_400_000);
+    const beforeLeadDays = template
+      .filter((t) => t.phase === "before")
+      .reduce((max, t) => Math.max(max, -t.dayOffset), 1);
+    const scaleFactor = availableDays > 0 ? Math.min(1, availableDays / beforeLeadDays) : 0;
+
     const tasks = template.map((t, i) => {
       const due = new Date(eventDate);
-      due.setDate(due.getDate() + t.dayOffset);
-      if (t.dayOffset < 0 && due < today) due.setTime(today.getTime());
+      const effectiveOffset = t.phase === "before" ? Math.round(t.dayOffset * scaleFactor) : t.dayOffset;
+      due.setDate(due.getDate() + effectiveOffset);
+      if (due < today) due.setTime(today.getTime());
       const student = students.length ? students[i % students.length] : null;
       return {
         title: t.title,
