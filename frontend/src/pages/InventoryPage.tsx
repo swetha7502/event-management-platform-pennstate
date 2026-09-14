@@ -211,19 +211,17 @@ export default function InventoryPage() {
                         </span>
                       </td>
                       <td className="px-5 py-3 text-right whitespace-nowrap">
+                        <button onClick={() => startEdit(it)} className="text-slate-400 hover:text-blue-700 p-1">
+                          <Pencil size={14} />
+                        </button>
                         {canManage && (
-                          <>
-                            <button onClick={() => startEdit(it)} className="text-slate-400 hover:text-blue-700 p-1">
-                              <Pencil size={14} />
-                            </button>
-                            <button
-                              onClick={() => removeItem(it.item_id)}
-                              disabled={deletingId === it.item_id}
-                              className="text-slate-400 hover:text-red-600 disabled:opacity-50 p-1"
-                            >
-                              <Trash2 size={14} />
-                            </button>
-                          </>
+                          <button
+                            onClick={() => removeItem(it.item_id)}
+                            disabled={deletingId === it.item_id}
+                            className="text-slate-400 hover:text-red-600 disabled:opacity-50 p-1"
+                          >
+                            <Trash2 size={14} />
+                          </button>
                         )}
                       </td>
                     </>
