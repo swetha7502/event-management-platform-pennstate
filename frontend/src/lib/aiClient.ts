@@ -6,7 +6,12 @@
 
 import { supabase } from "./supabaseClient";
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:4000";
+// .trim() + strip any trailing slash — a dashboard-set env var (Vercel,
+// same class of bug as the OpenAI key's invisible newline) can easily
+// end in "/", which turns "${BASE}/ai/chat" into a double slash that
+// doesn't match Express's route and 404s. Defend against it here
+// rather than relying on every env var always being entered perfectly.
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || "http://localhost:4000").trim().replace(/\/+$/, "");
 
 export interface ChatTurn {
   role: "user" | "assistant";
