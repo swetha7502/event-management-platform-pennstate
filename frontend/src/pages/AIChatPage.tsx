@@ -4,7 +4,7 @@ import { Send, Sparkles, ClipboardList, Plus, MessageSquare, Trash2, ClipboardCh
 import { useAuth } from "../context/AuthContext";
 import { useDraft } from "../context/DraftContext";
 import { getStudents, getInventory, createDraftPlan } from "../lib/dataClient";
-import { sendChatMessage } from "../lib/aiClient";
+import { sendChatMessage, AiChatError } from "../lib/aiClient";
 import { EVENT_TASK_TEMPLATE } from "../data/taskTemplates";
 import type { AiPrediction, ChatTurn } from "../lib/aiClient";
 import type { InventoryItem } from "../types";
@@ -239,8 +239,15 @@ export default function AIChatPage() {
       } else if (res.eventName && res.eventDate && !res.needsDate) {
         setReadyToAssign(res.eventName);
       }
-    } catch {
-      appendMessage(threadId, { from: "ai", text: "I couldn't reach the planning assistant just now — try again in a bit." });
+    } catch (err) {
+      // Was previously silently discarded — impossible to tell "network
+      // down" from "session expired" from "server error" without this.
+      console.error("AI chat request failed:", err);
+      const friendly =
+        err instanceof AiChatError && err.status === 401
+          ? "Your session may have expired — try logging out and back in."
+          : "I couldn't reach the planning assistant just now — try again in a bit.";
+      appendMessage(threadId, { from: "ai", text: friendly });
     }
     setThinking(false);
   };
