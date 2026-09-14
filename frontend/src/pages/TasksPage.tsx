@@ -9,6 +9,7 @@ import {
   getTasks,
   getStudents,
   getUpcomingEvents,
+  getAllEvents,
   createTask,
   updateTask,
   deleteTask,
@@ -48,6 +49,8 @@ export default function TasksPage() {
   // Students default to seeing only their own tasks; Coordinators
   // default to the full board. Either can toggle.
   const [filterMine, setFilterMine] = useState(() => session?.role === "Student");
+  const [hideCompleted, setHideCompleted] = useState(false);
+  const [completedEventIds, setCompletedEventIds] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     getTasks()
@@ -66,6 +69,12 @@ export default function TasksPage() {
         setNewTask((t) => ({ ...t, event_id: opts[0]?.event_id ?? "" }));
       })
       .catch(() => showToast("Couldn't load events"));
+    // Tasks whose event is done are history, not something to keep
+    // competing for attention on the active board — see TaskCard's
+    // eventCompleted fade.
+    getAllEvents()
+      .then((all) => setCompletedEventIds(new Set(all.filter((e) => e.status === "completed").map((e) => e.event_id))))
+      .catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -77,7 +86,9 @@ export default function TasksPage() {
   if (!session) return null;
   const canDelete = session.role === "Coordinator";
 
-  const visibleTasks = filterMine ? tasks.filter((t) => t.assigned_to === session.userId) : tasks;
+  const visibleTasks = tasks
+    .filter((t) => !filterMine || t.assigned_to === session.userId)
+    .filter((t) => !hideCompleted || !completedEventIds.has(t.event_id));
 
   const moveTask = (taskId: string, status: TaskStatus) => {
     const current = tasks.find((t) => t.task_id === taskId);
@@ -166,6 +177,15 @@ export default function TasksPage() {
           <p className="text-sm text-slate-500">Drag a card to update its status</p>
         </div>
         <div className="flex items-center gap-2">
+          <label className="flex items-center gap-1.5 text-xs text-slate-500 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={hideCompleted}
+              onChange={(e) => setHideCompleted(e.target.checked)}
+              className="rounded border-slate-300"
+            />
+            Hide completed events
+          </label>
           <div className="flex bg-slate-100 rounded-lg p-1 text-xs font-medium">
             <button
               onClick={() => setFilterMine(false)}
@@ -237,6 +257,7 @@ export default function TasksPage() {
                       setDragOverStatus(null);
                     }}
                     dragging={dragTaskId === t.task_id}
+                    eventCompleted={completedEventIds.has(t.event_id)}
                   />
                 ))}
                 {colTasks.length === 0 && (

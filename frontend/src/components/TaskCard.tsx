@@ -1,4 +1,4 @@
-import { Calendar, Paperclip } from "lucide-react";
+import { Calendar, Paperclip, CheckCircle2 } from "lucide-react";
 import type { DragEvent } from "react";
 import type { Task } from "../types";
 
@@ -9,6 +9,10 @@ interface TaskCardProps {
   onDragStart: (e: DragEvent<HTMLDivElement>) => void;
   onDragEnd: (e: DragEvent<HTMLDivElement>) => void;
   dragging: boolean;
+  // True once the task's event has been marked completed on the Events
+  // page — it's history at that point, so the card fades rather than
+  // competing for attention with tasks for events still coming up.
+  eventCompleted?: boolean;
 }
 
 function initials(name: string) {
@@ -36,8 +40,9 @@ export default function TaskCard({
   onDragStart,
   onDragEnd,
   dragging,
+  eventCompleted,
 }: TaskCardProps) {
-  const overdue = task.due_date && task.status !== "done" && isOverdue(task.due_date);
+  const overdue = task.due_date && task.status !== "done" && !eventCompleted && isOverdue(task.due_date);
 
   return (
     <div
@@ -46,9 +51,14 @@ export default function TaskCard({
       onDragEnd={onDragEnd}
       onClick={onOpen}
       className={`bg-white border border-slate-200 rounded-lg p-3 shadow-sm hover:shadow-md hover:border-blue-300 transition-shadow cursor-pointer active:cursor-grabbing ${
-        dragging ? "opacity-40" : ""
+        dragging ? "opacity-40" : eventCompleted ? "opacity-50 grayscale-[30%]" : ""
       }`}
     >
+      {eventCompleted && (
+        <div className="flex items-center gap-1 text-[10px] text-emerald-700 font-medium mb-1.5">
+          <CheckCircle2 size={10} /> Event completed
+        </div>
+      )}
       <p className="text-sm font-medium text-slate-800 mb-1.5">{task.title}</p>
 
       {task.description && (
