@@ -17,11 +17,23 @@ import {
 } from "../data/mockData";
 import { supabase, USE_SUPABASE } from "./supabaseClient";
 
+// tasks.due_date is a timestamptz column (not a plain date), so
+// PostgREST returns it as e.g. "2027-08-16T00:00:00+00:00" instead of
+// "2027-08-16". A native <input type="date"> only accepts an exact
+// "yyyy-mm-dd" value — anything else is silently treated as empty,
+// which is what was showing as a blank "dd-mm-yyyy" placeholder on the
+// task card's edit modal. Truncate to the date part right where rows
+// come back from the DB so every consumer (board, edit modal, card)
+// sees the plain form the rest of the app already expects.
+function normalizeTask(row: Task): Task {
+  return row.due_date ? { ...row, due_date: row.due_date.slice(0, 10) } : row;
+}
+
 export async function getTasks(): Promise<Task[]> {
   if (USE_SUPABASE && supabase) {
     const { data, error } = await supabase.from("tasks").select("*");
     if (error) throw error;
-    return data as Task[];
+    return (data as Task[]).map(normalizeTask);
   }
   return Promise.resolve(INITIAL_TASKS);
 }
@@ -54,7 +66,7 @@ export async function createTask(input: {
 
     const { data, error } = await supabase.from("tasks").insert(row).select().single();
     if (error) throw error;
-    return data as Task;
+    return normalizeTask(data as Task);
   }
   const now = new Date().toISOString();
   return Promise.resolve({

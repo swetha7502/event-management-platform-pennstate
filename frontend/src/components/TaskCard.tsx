@@ -33,6 +33,18 @@ function isOverdue(dueDate: string) {
   return due < today;
 }
 
+// due_date comes from Postgres as a raw "yyyy-mm-dd" string. Displaying
+// that as-is reads as ambiguous day/month order to anyone skimming it
+// (reported as "showing dd/mm/yyyy"), so spell the month out — there's
+// no format that's unambiguous with all-numeric digits alone.
+function formatDueDate(dueDate: string) {
+  return new Date(dueDate + "T00:00:00").toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+}
+
 export default function TaskCard({
   task,
   assigneeName,
@@ -99,7 +111,7 @@ export default function TaskCard({
           }`}
         >
           <Calendar size={11} />
-          {task.due_date}
+          {formatDueDate(task.due_date)}
         </div>
       )}
     </div>

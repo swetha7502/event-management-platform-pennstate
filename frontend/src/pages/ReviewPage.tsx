@@ -30,6 +30,16 @@ const PHASE_LABEL: Record<EventPhase, string> = {
 };
 const PHASE_ORDER: EventPhase[] = ["before", "during", "after"];
 
+// due_date is a raw "yyyy-mm-dd" string from Postgres — spell the month
+// out so it can't be misread as day-first vs month-first.
+function formatDueDate(dueDate: string) {
+  return new Date(dueDate + "T00:00:00").toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+}
+
 export default function ReviewPage() {
   const { pendingDraft, refreshDraft, discardDraft } = useDraft();
   const { session } = useAuth();
@@ -277,7 +287,7 @@ export default function ReviewPage() {
                           <p className="text-sm font-medium text-slate-800">{t.title}</p>
                           <p className="text-xs text-slate-500 mt-0.5">{t.description}</p>
                           <p className="text-[11px] text-slate-400 mt-1">
-                            {t.assigneeName} · due {t.due_date}
+                            {t.assigneeName} · due {t.due_date ? formatDueDate(t.due_date) : "—"}
                           </p>
                         </div>
                         <div className="flex items-center gap-1 shrink-0">
