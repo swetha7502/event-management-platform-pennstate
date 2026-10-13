@@ -28,7 +28,7 @@ const NAV = [
 
 export default function AppLayout() {
   const { session, logout } = useAuth();
-  const { pendingDraft } = useDraft();
+  const { drafts } = useDraft();
   const navigate = useNavigate();
   const toast = useToast();
 
@@ -62,7 +62,7 @@ export default function AppLayout() {
                     label={n.label}
                     active={isActive}
                     onClick={() => navigate(n.to)}
-                    badge={n.to === "/review" && !!pendingDraft}
+                    badge={n.to === "/review" && drafts.length > 0}
                   />
                 )}
               </NavLink>

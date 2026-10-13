@@ -3,10 +3,10 @@ import { Link } from "react-router-dom";
 import { Send, Sparkles, ClipboardList, Plus, MessageSquare, Trash2, ClipboardCheck } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
 import { useDraft } from "../context/DraftContext";
-import { getStudents, getInventory, createDraftPlan } from "../lib/dataClient";
+import { getInventory, createDraftPlan, deleteDraftPlan } from "../lib/dataClient";
 import { sendChatMessage, AiChatError } from "../lib/aiClient";
 import { EVENT_TASK_TEMPLATE } from "../data/taskTemplates";
-import type { AiPrediction, ChatTurn } from "../lib/aiClient";
+import type { AiChatResponse, AiPrediction, ChatTurn } from "../lib/aiClient";
 import type { InventoryItem } from "../types";
 
 const INVENTORY_CHECK_TITLE = "Check inventory before ordering supplies";
@@ -49,11 +49,12 @@ interface ChatThread {
 
 const INITIAL_MESSAGE: ChatMessage = {
   from: "ai",
-  text: "Hi! Tell me your next event and roughly when it's happening, and I'll estimate turnout and recommend a food order based on past events. When you're ready, I'll draft a starter task list for a Coordinator to review — nothing goes to any student until it's approved.",
+  text: "Hi! Tell me your next event and roughly when it's happening, and I'll estimate turnout and recommend a food order based on past events — or tell me how many people you expect if you already know. Let me know which students are working on it, and when you're ready, I'll draft a starter task list split across them for a Coordinator to review — nothing goes to any student until it's approved.",
 };
 
 const SUGGESTIONS = [
   "Diwali is on November 1st 2027",
+  "New event: Global Games Night, Dec 4, expecting ~80 people",
   "Navratri is next October",
   "How did Worldfest do last year?",
 ];
@@ -102,15 +103,21 @@ function loadThreads(key: string): ChatThread[] {
 
 export default function AIChatPage() {
   const { session } = useAuth();
-  const { pendingDraft, refreshDraft } = useDraft();
+  const { drafts, refreshDrafts } = useDraft();
   const storageKey = session?.userId ?? session?.name ?? "anon";
 
-  const [threads, setThreads] = useState<ChatThread[]>(() => loadThreads(storageKey));
-  const [activeThreadId, setActiveThreadId] = useState<string>(() => {
+  // Load once and derive both pieces of state from the same result.
+  // Calling loadThreads() separately for each made two *different* fresh
+  // threads on a first visit (nothing in storage yet), so the active id
+  // pointed at a thread that wasn't in the list and sent messages
+  // silently went nowhere.
+  const [initial] = useState(() => {
     const loaded = loadThreads(storageKey);
     const stored = localStorage.getItem(ACTIVE_PREFIX + storageKey);
-    return stored && loaded.some((t) => t.id === stored) ? stored : loaded[0].id;
+    return { threads: loaded, activeId: stored && loaded.some((t) => t.id === stored) ? stored : loaded[0].id };
   });
+  const [threads, setThreads] = useState<ChatThread[]>(initial.threads);
+  const [activeThreadId, setActiveThreadId] = useState<string>(initial.activeId);
   const [input, setInput] = useState("");
   const [thinking, setThinking] = useState(false);
   const [readyToAssign, setReadyToAssign] = useState<string | null>(null);
@@ -162,7 +169,8 @@ export default function AIChatPage() {
     eventName: string,
     eventDateISO: string,
     prediction: AiPrediction,
-    category: string | null
+    category: string | null,
+    assignedStudents: AiChatResponse["assignedStudents"]
   ) => {
     if (!session?.userId) {
       appendMessage(threadId, { from: "ai", text: "I couldn't resolve your account to save this draft — try logging in again." });
@@ -171,7 +179,7 @@ export default function AIChatPage() {
     const eventDate = new Date(eventDateISO + "T00:00:00");
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-    const [students, inventory] = await Promise.all([getStudents(), getInventory()]);
+    const inventory = await getInventory();
 
     // Always considers inventory first — spliced in right after the
     // earliest logistics tasks, before anything that involves sourcing
@@ -203,7 +211,9 @@ export default function AIChatPage() {
       const effectiveOffset = t.phase === "before" ? Math.round(t.dayOffset * scaleFactor) : t.dayOffset;
       due.setDate(due.getDate() + effectiveOffset);
       if (due < today) due.setTime(today.getTime());
-      const student = students.length ? students[i % students.length] : null;
+      // Only the students the coordinator named for this event — not
+      // the whole roster. None named = left unassigned for the Review page.
+      const student = assignedStudents.length ? assignedStudents[i % assignedStudents.length] : null;
       return {
         title: t.title,
         description: t.description,
@@ -214,8 +224,18 @@ export default function AIChatPage() {
       };
     });
 
+    // Re-drafting the same event (e.g. after changing which students are
+    // on it) replaces its earlier draft instead of stacking a duplicate
+    // tab — but only if nothing in it has been approved yet, so no
+    // Coordinator's in-progress review is thrown away.
+    const eventTitle = titleCase(eventName);
+    const stale = drafts.filter(
+      (d) => !d.eventId && d.eventDate === eventDateISO && d.eventTitle.toLowerCase() === eventTitle.toLowerCase()
+    );
+    await Promise.all(stale.map((d) => deleteDraftPlan(d.draftId)));
+
     await createDraftPlan({
-      eventTitle: titleCase(eventName),
+      eventTitle,
       eventDate: eventDateISO,
       culturalTag: category,
       predictedAttendance: prediction.predictedAttendance,
@@ -226,13 +246,14 @@ export default function AIChatPage() {
       createdBy: session.userId,
       tasks,
     });
-    await refreshDraft();
+    await refreshDrafts();
   };
 
   const submitMessage = async (text: string) => {
     if (!text.trim() || thinking) return;
-    const threadId = activeThreadId;
-    const historySoFar = threads.find((t) => t.id === threadId)?.history ?? [];
+    // The thread actually on screen — never an id that might not match it.
+    const threadId = activeThread.id;
+    const historySoFar = activeThread.history;
 
     appendMessage(threadId, { from: "user", text });
     maybeSetTitle(threadId, text);
@@ -249,8 +270,14 @@ export default function AIChatPage() {
       appendMessage(threadId, { from: "ai", text: res.reply });
 
       if (res.shouldDraftTasks && res.eventName && res.eventDate && !res.needsDate && res.prediction) {
-        await buildDraft(threadId, res.eventName, res.eventDate, res.prediction, res.category);
-        appendMessage(threadId, { from: "ai", text: "Draft ready — head to the Review page to approve it, task by task." });
+        await buildDraft(threadId, res.eventName, res.eventDate, res.prediction, res.category, res.assignedStudents ?? []);
+        const who = res.assignedStudents?.length
+          ? `Tasks are split across ${res.assignedStudents.map((s) => s.name).join(", ")}.`
+          : "No students were named, so tasks are left unassigned — tell me who's working on it and ask again, or assign them on the Review page.";
+        appendMessage(threadId, {
+          from: "ai",
+          text: `Draft ready — ${who} Head to the Review page to approve it, task by task.`,
+        });
       } else if (res.eventName && res.eventDate && !res.needsDate) {
         setReadyToAssign(res.eventName);
       }
@@ -352,13 +379,18 @@ export default function AIChatPage() {
           </div>
         </div>
 
-        {pendingDraft && (
+        {drafts.length > 0 && (
           <Link
             to="/review"
             className="flex items-center gap-2 bg-amber-50 border-b border-amber-200 text-amber-800 text-xs font-medium px-5 py-2.5 hover:bg-amber-100 transition-colors"
           >
-            <ClipboardList size={14} />
-            Draft ready for {pendingDraft.eventTitle} — go to Review page to approve
+            <ClipboardList size={14} className="shrink-0" />
+            <span className="truncate">
+              {drafts.length === 1
+                ? `Draft ready for ${drafts[0].eventTitle}`
+                : `${drafts.length} drafts ready (${drafts.map((d) => d.eventTitle).join(", ")})`}{" "}
+              — go to Review page to approve
+            </span>
           </Link>
         )}
 

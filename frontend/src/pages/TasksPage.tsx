@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { DragEvent } from "react";
 import { useOutletContext } from "react-router-dom";
 import { Plus, Trash2, X, Paperclip, User } from "lucide-react";
@@ -39,6 +39,9 @@ export default function TasksPage() {
 
   const [dragTaskId, setDragTaskId] = useState<string | null>(null);
   const [dragOverStatus, setDragOverStatus] = useState<TaskStatus | null>(null);
+  // Synchronous mirror of the in-flight drag, so the deferred fade in
+  // onDragStart can't land after a very quick drag has already ended.
+  const draggingRef = useRef<string | null>(null);
 
   const [showAdd, setShowAdd] = useState(false);
   const [newTask, setNewTask] = useState(BLANK_NEW_TASK);
@@ -93,14 +96,22 @@ export default function TasksPage() {
   const moveTask = (taskId: string, status: TaskStatus) => {
     const current = tasks.find((t) => t.task_id === taskId);
     if (!current || current.status === status) return;
+    const previous = current.status;
     setTasks((ts) => ts.map((t) => (t.task_id === taskId ? { ...t, status } : t)));
-    updateTask(taskId, { status }).catch(() => showToast("Failed to save move — try again"));
+    // Put the card back if the save fails, rather than leaving it in a
+    // column the DB doesn't agree with (it'd jump back on next reload).
+    updateTask(taskId, { status }).catch(() => {
+      setTasks((ts) => ts.map((t) => (t.task_id === taskId ? { ...t, status: previous } : t)));
+      showToast("Failed to save move — try again");
+    });
   };
 
   const handleDrop = (e: DragEvent<HTMLDivElement>, status: TaskStatus) => {
     e.preventDefault();
-    const id = e.dataTransfer.getData("text/plain");
+    const id = e.dataTransfer.getData("text/plain") || dragTaskId;
     if (id) moveTask(id, status);
+    draggingRef.current = null;
+    setDragTaskId(null);
     setDragOverStatus(null);
   };
 
@@ -215,7 +226,16 @@ export default function TasksPage() {
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         {COLUMNS.map((col) => {
-          const colTasks = visibleTasks.filter((t) => t.status === col.status);
+          // Stable order (due date, then creation) so a moved card lands
+          // in a predictable spot instead of wherever the DB row happened
+          // to come back — that reshuffling read as cards jumping around.
+          const colTasks = visibleTasks
+            .filter((t) => t.status === col.status)
+            .sort(
+              (a, b) =>
+                (a.due_date ?? "9999").localeCompare(b.due_date ?? "9999") ||
+                a.created_at.localeCompare(b.created_at)
+            );
           const meta = STATUS_META[col.status];
           const isOver = dragOverStatus === col.status;
           return (
@@ -224,9 +244,15 @@ export default function TasksPage() {
               onDragOver={(e) => {
                 e.preventDefault();
                 e.dataTransfer.dropEffect = "move";
-                setDragOverStatus(col.status);
+                if (dragOverStatus !== col.status) setDragOverStatus(col.status);
               }}
-              onDragLeave={() => setDragOverStatus((cur) => (cur === col.status ? null : cur))}
+              // dragleave also fires when the pointer moves from the column
+              // onto one of its own cards — only clear the highlight when
+              // actually leaving the column, or it flickers on every card.
+              onDragLeave={(e) => {
+                if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+                setDragOverStatus((cur) => (cur === col.status ? null : cur));
+              }}
               onDrop={(e) => handleDrop(e, col.status)}
               className={`rounded-xl border p-3 min-h-[320px] transition-colors ${
                 isOver ? "border-blue-400 bg-blue-50/60" : "border-slate-200 bg-slate-50"
@@ -250,9 +276,18 @@ export default function TasksPage() {
                     onDragStart={(e) => {
                       e.dataTransfer.setData("text/plain", t.task_id);
                       e.dataTransfer.effectAllowed = "move";
-                      setDragTaskId(t.task_id);
+                      // Deferred a frame: re-rendering the card faded
+                      // inside dragstart makes the browser snapshot the
+                      // faded version as the drag ghost (or cancel the
+                      // drag outright in some browsers).
+                      const id = t.task_id;
+                      draggingRef.current = id;
+                      requestAnimationFrame(() => {
+                        if (draggingRef.current === id) setDragTaskId(id);
+                      });
                     }}
                     onDragEnd={() => {
+                      draggingRef.current = null;
                       setDragTaskId(null);
                       setDragOverStatus(null);
                     }}

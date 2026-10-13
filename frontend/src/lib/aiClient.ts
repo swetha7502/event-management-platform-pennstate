@@ -35,6 +35,9 @@ export interface AiChatResponse {
   shouldDraftTasks: boolean;
   prediction: AiPrediction | null;
   category: string | null;
+  // Students the coordinator named for this event, already matched to
+  // real roster ids server-side. Empty = none named yet.
+  assignedStudents: { user_id: string; name: string }[];
 }
 
 // .status lets callers distinguish "your session expired" (401) from

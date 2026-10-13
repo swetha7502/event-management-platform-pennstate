@@ -442,26 +442,30 @@ export interface DraftPlan {
   tasks: DraftTaskRow[];
 }
 
-export async function getActiveDraft(): Promise<DraftPlan | null> {
-  if (!(USE_SUPABASE && supabase)) return null;
+// Every pending draft, oldest first — one per event being planned. A
+// Coordinator can plan several events in parallel; each draft is its own
+// tab on the Review page rather than the newest one hiding the rest.
+export async function getActiveDrafts(): Promise<DraftPlan[]> {
+  if (!(USE_SUPABASE && supabase)) return [];
 
-  const { data: plan, error: planErr } = await supabase
+  const { data: plans, error: planErr } = await supabase
     .from("draft_plans")
     .select("*")
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
+    .order("created_at", { ascending: true });
   if (planErr) throw planErr;
-  if (!plan) return null;
+  if (!plans || plans.length === 0) return [];
 
   const { data: tasks, error: tasksErr } = await supabase
     .from("draft_tasks")
     .select("*")
-    .eq("draft_id", plan.draft_id)
+    .in(
+      "draft_id",
+      plans.map((p) => p.draft_id)
+    )
     .order("due_date", { ascending: true });
   if (tasksErr) throw tasksErr;
 
-  return {
+  return plans.map((plan) => ({
     draftId: plan.draft_id,
     eventTitle: plan.event_title,
     eventDate: plan.event_date,
@@ -475,16 +479,18 @@ export async function getActiveDraft(): Promise<DraftPlan | null> {
     recommendedFoodCount: plan.recommended_food_count,
     basisNote: plan.basis_note,
     eventId: plan.event_id,
-    tasks: (tasks ?? []).map((t) => ({
-      id: t.draft_task_id,
-      title: t.title,
-      description: t.description ?? "",
-      phase: t.phase,
-      due_date: t.due_date,
-      assigned_to: t.assigned_to,
-      assigneeName: t.assignee_name ?? "Unassigned",
-    })),
-  };
+    tasks: (tasks ?? [])
+      .filter((t) => t.draft_id === plan.draft_id)
+      .map((t) => ({
+        id: t.draft_task_id,
+        title: t.title,
+        description: t.description ?? "",
+        phase: t.phase,
+        due_date: t.due_date,
+        assigned_to: t.assigned_to,
+        assigneeName: t.assignee_name ?? "Unassigned",
+      })),
+  }));
 }
 
 export async function createDraftPlan(input: {
@@ -505,8 +511,8 @@ export async function createDraftPlan(input: {
     assigned_to: string | null;
     assigneeName: string;
   }[];
-}): Promise<void> {
-  if (!(USE_SUPABASE && supabase)) return;
+}): Promise<string | null> {
+  if (!(USE_SUPABASE && supabase)) return null;
 
   const { data: plan, error: planErr } = await supabase
     .from("draft_plans")
@@ -537,6 +543,7 @@ export async function createDraftPlan(input: {
   }));
   const { error: tasksErr } = await supabase.from("draft_tasks").insert(rows);
   if (tasksErr) throw tasksErr;
+  return plan.draft_id;
 }
 
 export async function updateDraftTaskRow(

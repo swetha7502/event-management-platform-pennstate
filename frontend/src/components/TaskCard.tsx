@@ -62,7 +62,7 @@ export default function TaskCard({
       onDragStart={onDragStart}
       onDragEnd={onDragEnd}
       onClick={onOpen}
-      className={`bg-white border border-slate-200 rounded-lg p-3 shadow-sm hover:shadow-md hover:border-blue-300 transition-shadow cursor-pointer active:cursor-grabbing ${
+      className={`bg-white border border-slate-200 rounded-lg p-3 shadow-sm hover:shadow-md hover:border-blue-300 transition-shadow cursor-grab active:cursor-grabbing select-none ${
         dragging ? "opacity-40" : eventCompleted ? "opacity-50 grayscale-[30%]" : ""
       }`}
     >
@@ -96,6 +96,9 @@ export default function TaskCard({
             target="_blank"
             rel="noreferrer"
             onClick={(e) => e.stopPropagation()}
+            // Links are natively draggable — without this, grabbing the card
+            // by its paperclip drags the URL instead of the card.
+            draggable={false}
             className="shrink-0 text-slate-400 hover:text-blue-700"
             title="Open attachment"
           >

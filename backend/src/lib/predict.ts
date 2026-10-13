@@ -6,6 +6,8 @@ import { supabase } from './supabase';
 // a real pattern. Instead: recency-weighted averages, variance-aware
 // confidence, and a category fallback, all directly justified by what
 // was actually found in this data (see conversation notes, Aug 2026).
+// No category/global-average fallback: an event with no history gets
+// no number rather than a borrowed one.
 
 export interface EventPrediction {
   matchedEventCount: number;
@@ -100,7 +102,22 @@ async function findFuzzyTitleMatch(query: string): Promise<string | null> {
   return best?.title ?? null;
 }
 
-export async function predictEvent(eventName: string, category?: string | null): Promise<EventPrediction> {
+// The coordinator's own expected headcount always wins over history —
+// they know things the data doesn't (venue cap, RSVPs, a co-host). No
+// range: it's their number, not a statistical estimate, and the Review
+// page uses a null range to label it as coordinator-provided.
+export function predictionFromCoordinatorCount(expected: number): EventPrediction {
+  return {
+    matchedEventCount: 0,
+    predictedAttendance: expected,
+    attendanceRange: null,
+    confidence: 'high',
+    recommendedFoodCount: Math.round(expected * FOOD_SAFETY_FLOOR_RATIO),
+    basisNote: `Expected attendance of ${expected} given by the coordinator (food includes a 5% buffer).`,
+  };
+}
+
+export async function predictEvent(eventName: string): Promise<EventPrediction> {
   const keywords = eventName
     .trim()
     .split(/\s+/)
@@ -137,62 +154,36 @@ export async function predictEvent(eventName: string, category?: string | null):
     }
   }
 
-  let usedCategoryFallback = false;
-  if (matched.length === 0 && category) {
-    const { data, error } = await supabase
-      .from('events')
-      .select('event_id, date, actual_attendance')
-      .eq('status', 'completed')
-      .not('actual_attendance', 'is', null)
-      .eq('cultural_calendar_tag', category)
-      .order('date', { ascending: true });
-    if (error) throw error;
-    if (data && data.length > 0) {
-      matched = data;
-      usedCategoryFallback = true;
-    }
-  }
-
-  let basisNote: string;
-  let confidence: 'high' | 'medium' | 'low';
-
+  // No real history for this event → no number. Previously this fell
+  // back to a same-category or all-events average, which for a genuinely
+  // new event is just a made-up figure presented as a prediction. Now
+  // the AI says there's no history and asks the coordinator instead —
+  // they often know the expected headcount (see ai.ts).
   if (matched.length === 0) {
-    const { data: all, error: allErr } = await supabase
-      .from('events')
-      .select('event_id, date, actual_attendance')
-      .eq('status', 'completed')
-      .not('actual_attendance', 'is', null)
-      .order('date', { ascending: true });
-    if (allErr) throw allErr;
-    matched = all ?? [];
-    confidence = 'low';
-    basisNote = matched.length
-      ? `No history for "${eventName.trim()}"${category ? ` or the "${category}" category` : ''} — rough estimate averaged across all ${matched.length} past completed events.`
-      : 'No historical event data yet, so this is a placeholder estimate.';
-  } else {
-    const attendances = matched
-      .map((e) => e.actual_attendance)
-      .filter((n): n is number => typeof n === 'number');
-    const plainMean = attendances.length ? attendances.reduce((a, b) => a + b, 0) / attendances.length : 0;
-    const cv = plainMean > 0 ? stdDev(attendances, plainMean) / plainMean : 0;
-    confidence = classifyConfidence(matched.length, cv);
-    basisNote = usedCategoryFallback
-      ? `No history for "${eventName.trim()}" specifically — estimate based on ${matched.length} past "${category}" events, weighted toward the most recent.`
-      : correctedTitle
-        ? `Interpreted "${eventName.trim()}" as "${correctedTitle}" — based on ${matched.length} past event${matched.length === 1 ? '' : 's'}, weighted toward the most recent.`
-        : `Based on ${matched.length} past event${matched.length === 1 ? '' : 's'} matching "${eventName.trim()}"${matched.length >= 2 ? ', weighted toward the most recent' : ''}.`;
+    return {
+      matchedEventCount: 0,
+      predictedAttendance: null,
+      attendanceRange: null,
+      confidence: 'low',
+      recommendedFoodCount: null,
+      basisNote: `No past events found matching "${eventName.trim()}" — no historical estimate available.`,
+    };
   }
 
   const attendances = matched
     .map((e) => e.actual_attendance)
     .filter((n): n is number => typeof n === 'number');
+  const plainMean = attendances.length ? attendances.reduce((a, b) => a + b, 0) / attendances.length : 0;
+  const sd = stdDev(attendances, plainMean);
+  const confidence = classifyConfidence(matched.length, plainMean > 0 ? sd / plainMean : 0);
+  const basisNote = correctedTitle
+    ? `Interpreted "${eventName.trim()}" as "${correctedTitle}" — based on ${matched.length} past event${matched.length === 1 ? '' : 's'}, weighted toward the most recent.`
+    : `Based on ${matched.length} past event${matched.length === 1 ? '' : 's'} matching "${eventName.trim()}"${matched.length >= 2 ? ', weighted toward the most recent' : ''}.`;
 
   let predictedAttendance: number | null = null;
   let attendanceRange: { low: number; high: number } | null = null;
   if (attendances.length > 0) {
     predictedAttendance = Math.round(weightedAverage(attendances));
-    const plainMean = attendances.reduce((a, b) => a + b, 0) / attendances.length;
-    const sd = stdDev(attendances, plainMean);
     attendanceRange = {
       low: Math.max(0, Math.round(predictedAttendance - sd)),
       high: Math.round(predictedAttendance + sd),
@@ -201,26 +192,22 @@ export async function predictEvent(eventName: string, category?: string | null):
 
   let recommendedFoodCount: number | null = null;
   if (predictedAttendance !== null) {
-    if (matched.length > 0) {
-      const eventIds = matched.map((e) => e.event_id);
-      const { data: foodRows, error: foodErr } = await supabase
-        .from('food_logs')
-        .select('event_id, headcount_given, actual_attendance')
-        .in('event_id', eventIds);
-      if (foodErr) throw foodErr;
+    const eventIds = matched.map((e) => e.event_id);
+    const { data: foodRows, error: foodErr } = await supabase
+      .from('food_logs')
+      .select('event_id, headcount_given, actual_attendance')
+      .in('event_id', eventIds);
+    if (foodErr) throw foodErr;
 
-      const orderIndex = new Map(matched.map((e, i) => [e.event_id, i]));
-      const ratiosOldestFirst = (foodRows ?? [])
-        .filter((r) => r.actual_attendance > 0)
-        .sort((a, b) => (orderIndex.get(a.event_id) ?? 0) - (orderIndex.get(b.event_id) ?? 0))
-        .map((r) => r.headcount_given / r.actual_attendance);
+    const orderIndex = new Map(matched.map((e, i) => [e.event_id, i]));
+    const ratiosOldestFirst = (foodRows ?? [])
+      .filter((r) => r.actual_attendance > 0)
+      .sort((a, b) => (orderIndex.get(a.event_id) ?? 0) - (orderIndex.get(b.event_id) ?? 0))
+      .map((r) => r.headcount_given / r.actual_attendance);
 
-      const rawRatio = ratiosOldestFirst.length ? weightedAverage(ratiosOldestFirst) : FOOD_SAFETY_FLOOR_RATIO;
-      const targetRatio = Math.min(FOOD_WASTE_CEILING_RATIO, Math.max(FOOD_SAFETY_FLOOR_RATIO, rawRatio));
-      recommendedFoodCount = Math.round(predictedAttendance * targetRatio);
-    } else {
-      recommendedFoodCount = Math.round(predictedAttendance * FOOD_SAFETY_FLOOR_RATIO);
-    }
+    const rawRatio = ratiosOldestFirst.length ? weightedAverage(ratiosOldestFirst) : FOOD_SAFETY_FLOOR_RATIO;
+    const targetRatio = Math.min(FOOD_WASTE_CEILING_RATIO, Math.max(FOOD_SAFETY_FLOOR_RATIO, rawRatio));
+    recommendedFoodCount = Math.round(predictedAttendance * targetRatio);
   }
 
   return {

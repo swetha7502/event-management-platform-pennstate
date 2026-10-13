@@ -1,29 +1,29 @@
 import { createContext, useContext, useEffect, useState, ReactNode } from "react";
-import { getActiveDraft, deleteDraftPlan, type DraftPlan } from "../lib/dataClient";
+import { getActiveDrafts, deleteDraftPlan, type DraftPlan } from "../lib/dataClient";
 
 interface DraftContextValue {
-  pendingDraft: DraftPlan | null;
+  // One entry per event being planned — several can be in flight at once.
+  drafts: DraftPlan[];
   loading: boolean;
-  refreshDraft: () => Promise<void>;
-  discardDraft: () => Promise<void>;
+  refreshDrafts: () => Promise<void>;
+  discardDraft: (draftId: string) => Promise<void>;
 }
 
 const DraftContext = createContext<DraftContextValue | undefined>(undefined);
 
 // Backed by Supabase (draft_plans/draft_tasks), not local React state —
 // specifically so two Coordinators, on two different logins/devices,
-// see and can act on the same in-flight AI-drafted plan. This is a thin
-// cache: refreshDraft() re-fetches from the DB, which callers do after
+// see and can act on the same in-flight AI-drafted plans. This is a thin
+// cache: refreshDrafts() re-fetches from the DB, which callers do after
 // every mutation (create/approve/discard/edit) rather than trusting
 // optimistic local state, since someone else may have changed it too.
 export function DraftProvider({ children }: { children: ReactNode }) {
-  const [pendingDraft, setPendingDraft] = useState<DraftPlan | null>(null);
+  const [drafts, setDrafts] = useState<DraftPlan[]>([]);
   const [loading, setLoading] = useState(true);
 
-  const refreshDraft = async () => {
+  const refreshDrafts = async () => {
     try {
-      const draft = await getActiveDraft();
-      setPendingDraft(draft);
+      setDrafts(await getActiveDrafts());
     } catch {
       // leave whatever was last known — a transient fetch failure
       // shouldn't wipe the nav badge / review page state
@@ -31,17 +31,16 @@ export function DraftProvider({ children }: { children: ReactNode }) {
   };
 
   useEffect(() => {
-    refreshDraft().finally(() => setLoading(false));
+    refreshDrafts().finally(() => setLoading(false));
   }, []);
 
-  const discardDraft = async () => {
-    if (!pendingDraft) return;
-    await deleteDraftPlan(pendingDraft.draftId);
-    await refreshDraft();
+  const discardDraft = async (draftId: string) => {
+    await deleteDraftPlan(draftId);
+    await refreshDrafts();
   };
 
   return (
-    <DraftContext.Provider value={{ pendingDraft, loading, refreshDraft, discardDraft }}>
+    <DraftContext.Provider value={{ drafts, loading, refreshDrafts, discardDraft }}>
       {children}
     </DraftContext.Provider>
   );

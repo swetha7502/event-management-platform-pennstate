@@ -41,13 +41,17 @@ function formatDueDate(dueDate: string) {
 }
 
 export default function ReviewPage() {
-  const { pendingDraft, refreshDraft, discardDraft } = useDraft();
+  const { drafts, refreshDrafts, discardDraft } = useDraft();
   const { session } = useAuth();
   const { showToast } = useOutletContext<OutletContextType>();
   const [students, setStudents] = useState<Student[]>([]);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState<Partial<DraftTaskRow>>({});
   const [busyId, setBusyId] = useState<string | null>(null);
+  // One tab per event being planned. Falls back to the first draft when
+  // the selected one disappears (fully reviewed, or discarded by the
+  // other Coordinator).
+  const [activeDraftId, setActiveDraftId] = useState<string | null>(null);
 
   useEffect(() => {
     getStudents().then(setStudents).catch(() => {});
@@ -56,6 +60,8 @@ export default function ReviewPage() {
   if (!session) return null;
   // Coordinator-only page — Students get redirected, not just hidden nav.
   if (session.role !== "Coordinator") return <Navigate to="/dashboard" replace />;
+
+  const pendingDraft = drafts.find((d) => d.draftId === activeDraftId) ?? drafts[0] ?? null;
 
   if (!pendingDraft) {
     return (
@@ -81,7 +87,7 @@ export default function ReviewPage() {
     if (!editingId) return;
     try {
       await updateDraftTaskRow(editingId, draft);
-      await refreshDraft();
+      await refreshDrafts();
     } catch {
       showToast("Failed to save changes");
     }
@@ -126,10 +132,10 @@ export default function ReviewPage() {
       });
       await resolveDraftTask(t.id);
       if (isLastTask) {
-        await discardDraft();
+        await discardDraft(pendingDraft.draftId);
         showToast(`"${t.title}" assigned — plan fully reviewed`);
       } else {
-        await refreshDraft();
+        await refreshDrafts();
         showToast(`"${t.title}" assigned`);
       }
     } catch {
@@ -142,10 +148,10 @@ export default function ReviewPage() {
     try {
       await resolveDraftTask(t.id);
       if (isLastTask) {
-        await discardDraft();
+        await discardDraft(pendingDraft.draftId);
         showToast("Plan fully reviewed");
       } else {
-        await refreshDraft();
+        await refreshDrafts();
       }
     } catch {
       showToast("Failed to discard — try again");
@@ -154,7 +160,7 @@ export default function ReviewPage() {
 
   const handleDiscardDraft = async () => {
     try {
-      await discardDraft();
+      await discardDraft(pendingDraft.draftId);
       showToast("Draft discarded");
     } catch {
       showToast("Failed to discard draft");
@@ -170,6 +176,37 @@ export default function ReviewPage() {
         Drafted by the AI assistant — shared across both Coordinators. Review, edit, and approve
         each task individually.
       </p>
+
+      {drafts.length > 1 && (
+        <div className="flex gap-1 border-b border-slate-200 mb-5 overflow-x-auto">
+          {drafts.map((d) => {
+            const active = d.draftId === pendingDraft.draftId;
+            return (
+              <button
+                key={d.draftId}
+                onClick={() => {
+                  setActiveDraftId(d.draftId);
+                  setEditingId(null);
+                }}
+                className={`flex items-center gap-2 px-4 py-2 text-sm font-medium border-b-2 -mb-px whitespace-nowrap transition-colors ${
+                  active
+                    ? "border-blue-700 text-blue-800"
+                    : "border-transparent text-slate-500 hover:text-slate-700"
+                }`}
+              >
+                {d.eventTitle}
+                <span
+                  className={`text-[10px] rounded-full px-1.5 py-0.5 ${
+                    active ? "bg-blue-100 text-blue-700" : "bg-slate-100 text-slate-500"
+                  }`}
+                >
+                  {d.tasks.length}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       <div className="bg-white border border-slate-200 rounded-xl p-5 mb-5">
         <div className="flex items-center justify-between mb-3">
@@ -196,8 +233,12 @@ export default function ReviewPage() {
                   : (pendingDraft.predictedAttendance ?? "—")}{" "}
                 students
               </p>
-              <p className="text-[11px] text-slate-500 capitalize">
-                {pendingDraft.predictionConfidence} confidence
+              <p className="text-[11px] text-slate-500">
+                {pendingDraft.predictedAttendance === null
+                  ? "No past data — no estimate"
+                  : pendingDraft.attendanceRange
+                    ? `${pendingDraft.predictionConfidence[0].toUpperCase()}${pendingDraft.predictionConfidence.slice(1)} confidence`
+                    : "Coordinator's estimate"}
               </p>
             </div>
           </div>
